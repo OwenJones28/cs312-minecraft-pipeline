@@ -1,0 +1,118 @@
+---
+- name: Configure Minecraft on EC2
+  hosts: minecraft
+  become: true
+
+  vars:
+    minecraft_image_tag: "v1.0.3"
+    backup_bucket: "cs312-jonesow-mc-backups"
+    minecraft_version: "1.21.11"
+    ecr_repo_uri: "992382608892.dkr.ecr.us-east-1.amazonaws.com/cs312-minecraft-ecr"
+    data_dir: /opt/minecraft/data
+
+  tasks:
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repo
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+        https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Install AWS CLI
+      apt:
+        name: awscli
+        state: present
+        update_cache: true
+
+    - name: Authenticate Docker to ECR using instance profile
+      shell: |
+        aws ecr get-login-password --region us-east-1 \
+          | docker login --username AWS \
+            --password-stdin {{ ecr_repo_uri | regex_replace('/[^/]+$', '') }}
+      changed_when: true
+
+    - name: Create Minecraft directory
+      file:
+        path: /opt/minecraft
+        state: directory
+        mode: '0755'
+
+    - name: Create Minecraft data directory
+      file:
+        path: "{{ data_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Check if world data already exists
+      stat:
+        path: "{{ data_dir }}/world"
+      register: world_stat
+
+    - name: Restore world data from S3 (only if world is absent)
+      shell: |
+        aws s3 cp s3://cs312-jonesow-mc-backups/backups/world-backup.tar ./world-restore.tar
+      when: not world_stat.stat.exists
+      changed_when: true
+
+    - name: Extract world backup
+      shell: |
+        tar -xf ./world-restore.tar -C {{ data_dir }}/world
+      when: not world_stat.stat.exists
+
+    - name: Write Docker Compose file
+      copy:
+        dest: /opt/minecraft/docker-compose.yml
+        content: |
+          services:
+            minecraft:
+              image: {{ ecr_repo_uri }}:{{ minecraft_image_tag }}
+              restart: unless-stopped
+              ports:
+                - "25565:25565"
+              environment:
+                EULA: "TRUE"
+                TYPE: "PAPER"
+                VERSION: "{{ minecraft_version }}"
+                MOTD: "Owen Jones - CS312"
+                MEMORY: "1G"
+              volumes:
+                - {{ data_dir }}:/data
+
+    - name: Start Minecraft
+      community.docker.docker_compose_v2:
+        project_src: /opt/minecraft
+        state: present

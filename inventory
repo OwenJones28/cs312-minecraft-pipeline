@@ -1,0 +1,2 @@
+[minecraft]
+13.218.221.187 ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/cs312-key.pem
