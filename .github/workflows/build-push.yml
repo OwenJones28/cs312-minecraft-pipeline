@@ -35,20 +35,36 @@ jobs:
 
       - name: Smoke test
         run: |
-          docker run -d --name test -p 8080:80 ${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
-          sleep 10
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health.php)
-          docker stop test
-          if [ "$STATUS" != "200" ]; then
-            echo "Smoke test failed with status $STATUS"
+          docker run -d \
+            --name test \
+            -p 25565:25565 \
+            -e EULA=TRUE \
+            ${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
+
+          echo "Waiting for Minecraft server startup..."
+          sleep 45
+
+          if ! docker exec test mc-health; then
+            echo "Smoke test failed"
+
+            echo "==== Container Logs ===="
+            docker logs test
+
+            docker stop test
             exit 1
           fi
-          echo "Smoke test passed with status $STATUS"
+
+          echo "Smoke test passed"
+
+          docker stop test
 
       - name: Tag and push to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker tag ${{ env.ECR_REPOSITORY }}:${{ github.ref_name }} \
+          docker tag \
+            ${{ env.ECR_REPOSITORY }}:${{ github.ref_name }} \
             $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
-          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
+
+          docker push \
+            $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.ref_name }}
